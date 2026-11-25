@@ -46,50 +46,139 @@ FONT_REG = "/usr/share/fonts/truetype/freefont/FreeSans.ttf"
 
 
 def fit(draw, text, font, max_width):
+    """Return a single line that never exceeds max_width (ellipsis fallback)."""
     line = text
     while draw.textlength(line + "…", font=font) > max_width and len(line) > 12:
         line = line[:-1].rstrip()
     return line + "…" if line != text else line
 
 
+def wrap(draw, text, font, max_width):
+    """Split text into up to 3 lines that each fit max_width.
+
+    Greedy word wrap; falls back to hard character trim for a single
+    over-long word so no line can ever overflow its box.
+    """
+    lines = []
+    for word in text.split():
+        candidate = (lines[-1] + " " + word) if lines else word
+        if draw.textlength(candidate, font=font) <= max_width:
+            if not lines:
+                lines.append(candidate)
+            else:
+                lines[-1] = candidate
+            continue
+        if not lines or len(lines) == 3:
+            # Hard trim: only reached for a very long single word.
+            line = word
+            while draw.textlength(line + "…", font=font) > max_width and len(line) > 4:
+                line = line[:-1].rstrip()
+            lines.append(line + "…")
+        else:
+            lines.append(word)
+    return lines
+
+
 def draw_image():
+    """Compose the whole front page and return the finished image."""
     img = Image.new("RGB", SIZE, (12, 15, 20))
     d = ImageDraw.Draw(img)
-    f_head = ImageFont.truetype(FONT_BOLD, 46)
-    f_sub = ImageFont.truetype(FONT_BOLD, 22)
+
+    # -- Fonts ------------------------------------------------------------
+    f_head = ImageFont.truetype(FONT_BOLD, 44)
+    f_sub = ImageFont.truetype(FONT_BOLD, 21)
     f_story = ImageFont.truetype(FONT_REG, 20)
     f_tag = ImageFont.truetype(FONT_BOLD, 14)
-    f_foot = ImageFont.truetype(FONT_REG, 15)
+    f_foot = ImageFont.truetype(FONT_REG, 14)
 
-    d.rectangle([0, 0, SIZE[0], 128], fill=(20, 26, 34))
-    d.text((40, 22), "THE WORLD IN ONE DAY", font=f_head, fill=(240, 240, 235))
+    # -- Header: banner, title, subtitle ----------------------------------
+    header_h = 124
+    d.rectangle([0, 0, SIZE[0], header_h], fill=(20, 26, 34))
+    title = "THE WORLD IN ONE DAY"
     regions = len(set(s[1] for s in STORIES))
-    d.text((40, 84), "Wednesday, 25 November 2026 · %d stories · %d regions" % (len(STORIES), regions), font=f_sub, fill=(255, 210, 90))
+    sub = "Wednesday, 25 November 2026 · %d stories · %d regions" % (
+        len(STORIES), regions)
 
-    body_top = 152
+    # Shrink the title until it fits the padded width, so it is never cut.
+    title_pad = 80
+    size = 44
+    while d.textlength(title, font=ImageFont.truetype(FONT_BOLD, size)) > SIZE[0] - title_pad and size > 18:
+        size -= 2
+    f_title = ImageFont.truetype(FONT_BOLD, size)
+    # Center the title block vertically: title on top, subtitle under it.
+    title_w = d.textlength(title, font=f_title)
+    d.text(((SIZE[0] - title_w) // 2, 26), title, font=f_title, fill=(240, 240, 235))
+    sub_w = d.textlength(sub, font=f_sub)
+    d.text(((SIZE[0] - sub_w) // 2, 84), sub, font=f_sub, fill=(255, 210, 90))
+    # Thin separator line between header and body.
+    d.line([0, header_h + 6, SIZE[0], header_h + 6], fill=(60, 70, 84), width=2)
+
+    # -- Body: two columns of story cards ---------------------------------
+    body_top = 148
+    footer_h = 44
+    body_bottom = SIZE[1] - footer_h - 16
+    margin = 36
+    gap = 16            # tighter gap between cards
+    card_gap = 10       # vertical breathing room between stacked cards
+    col_w = (SIZE[0] - margin * 2 - gap) // 2
+    xs = [margin, margin + col_w + gap]
+
+    # Fill columns top-to-bottom, balanced: left column gets the extra row.
     rows = (len(STORIES) + 1) // 2
-    row_h = (978 - body_top - 40) // rows
-    col_w = (SIZE[0] - 40 * 2 - 30) // 2
-    xs = [40, 40 + col_w + 30]
+    # Reserve one card_gap per gap between cards (rows - 1 gaps).
+    row_h = (body_bottom - body_top - (rows - 1) * card_gap) // rows
+    text_x = 14           # text indent inside a card
+    tag_chip_y = 9        # tag chip offset from card top
+    text_top = 30         # story text offset from card top
+    line_h = 24           # story text line height (fits wrapped lines)
+
     for i, (txt, tag, color) in enumerate(STORIES):
-        col = i // rows
-        row = i % rows
+        col = 0 if i < rows else 1
+        row = i if i < rows else i - rows
         x = xs[col]
-        yy = body_top + row * row_h
-        d.rounded_rectangle([x, yy, x + col_w, yy + row_h - 6], radius=8, fill=(20, 26, 34))
-        d.ellipse([x + 12, yy + 14, x + 22, yy + 24], fill=color)
+        yy = body_top + row * (row_h + card_gap)
+        # Card background: lighter surface + subtle region-tinted border
+        # for higher contrast against the dark page background.
+        card_fill = (30, 36, 46)
+        card_h = row_h - 6
+        # Soft drop shadow: dark rect offset a few px down/right, drawn
+        # before the card so it peeks out only at the bottom-right edge.
+        d.rounded_rectangle(
+            [x + 4, yy + 4, x + col_w + 4, yy + card_h + 4], radius=8,
+            fill=(5, 7, 10))
+        d.rounded_rectangle(
+            [x, yy, x + col_w, yy + card_h], radius=8, fill=card_fill,
+            outline=tuple(c // 3 for c in color), width=1)
+        # Region colour dot.
+        d.ellipse([x + text_x, yy + 13, x + text_x + 10, yy + 23], fill=color)
+        # Region tag chip (tinted background + coloured text).
         tw = d.textlength(tag, font=f_tag)
         chip = tuple(min(255, c // 3 + 20) for c in color)
-        d.rounded_rectangle([x + 30, yy + 9, x + 30 + tw + 12, yy + 27], radius=6, fill=chip)
-        d.text((x + 36, yy + 11), tag, font=f_tag, fill=color)
-        d.text((x + 12, yy + 30), fit(d, txt, f_story, col_w - 44), font=f_story, fill=(228, 230, 232))
+        d.rounded_rectangle(
+            [x + text_x + 18, yy + tag_chip_y, x + text_x + 24 + tw, yy + tag_chip_y + 18],
+            radius=6, fill=chip)
+        d.text((x + text_x + 24, yy + tag_chip_y + 2), tag, font=f_tag, fill=color)
+        # Story headline: wrap to fit the card instead of truncating.
+        max_w = col_w - text_x - 18
+        lines = wrap(d, txt, f_story, max_w)
+        for j, line in enumerate(lines):
+            ly = yy + text_top + j * line_h
+            if ly > yy + row_h - 6:  # safety: never draw outside card
+                break
+            d.text((x + text_x, ly), line, font=f_story, fill=(228, 230, 232))
 
-    d.rectangle([0, SIZE[1] - 44, SIZE[0], SIZE[1]], fill=(20, 26, 34))
-    d.text((40, SIZE[1] - 32), "All events first reported 25 November 2026 · Reuters · Bloomberg · WSJ · Al Jazeera · NHK · NASA", font=f_foot, fill=(160, 170, 180))
+    # -- Footer ------------------------------------------------------------
+    d.rectangle([0, SIZE[1] - footer_h, SIZE[0], SIZE[1]], fill=(20, 26, 34))
+    foot = "All events first reported 25 November 2026 · Reuters · Bloomberg · WSJ · Al Jazeera · NHK · NASA"
+    # Truncate the footer only if it would overflow the padded width.
+    d.text((margin, SIZE[1] - 30),
+           fit(d, foot, f_foot, SIZE[0] - margin * 2),
+           font=f_foot, fill=(160, 170, 180))
     return img
 
 
 def main():
+    # Resolve the output directory (default /output, override via env).
     out_dir = os.environ.get("MAKEFUN_OUTPUT_DIR", "/output")
     os.makedirs(out_dir, mode=0o755, exist_ok=True)
     img = draw_image()
@@ -97,6 +186,7 @@ def main():
     img.save(dst)
     os.chmod(dst, 0o644)
     print("entry: wrote %s" % dst)
+    return 0
 
 
 if __name__ == "__main__":
